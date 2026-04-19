@@ -6,6 +6,7 @@ dependencies:
   - python=3.10
   - numpy=1.26
   - scipy=1.13
+  - scikit-learn
   - jupyter
   - matplotlib
   - ipympl
