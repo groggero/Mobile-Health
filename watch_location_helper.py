@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import time
 from pathlib import Path
 from typing import Iterable
 
@@ -24,6 +25,13 @@ AXIS_GROUPS = {
     "gyr": ("gx", "gy", "gz"),
     "mag": ("mx", "my", "mz"),
 }
+
+
+def log(message: str) -> None:
+    timestamp = time.strftime("%H:%M:%S")
+    line = f"[{timestamp}] {message}"
+    print(line, flush=True)
+
 
 
 def parse_trace_id(path: Path) -> int:
@@ -151,22 +159,29 @@ def load_dataset(data_dir: Path, labeled: bool) -> tuple[pd.DataFrame, np.ndarra
     ids: list[int] = []
     labels: list[int] = []
     groups: list[int] = []
+    paths = sorted(data_dir.glob("*.pkl"))
+    total = len(paths)
+    start_time = time.time()
 
-    for path in sorted(data_dir.glob("*.pkl")):
+    for idx, path in enumerate(paths, start=1):
         recording = Recording(str(path))
         rows.append(extract_watch_location_features(recording))
         ids.append(parse_trace_id(path))
         if labeled:
             labels.append(int(recording.labels["watch_loc"]))
             groups.append(int(recording.labels["path_idx"]))
+        if idx == 1 or idx % 25 == 0 or idx == total:
+            elapsed = time.time() - start_time
+            log(f"  Processed {idx}/{total} traces from {data_dir.name} in {elapsed:.1f}s")
 
     frame = pd.DataFrame(rows).replace([np.inf, -np.inf], np.nan)
-    return (
+    result = (
         frame,
         np.asarray(ids, dtype=int),
         np.asarray(labels, dtype=int) if labeled else None,
         np.asarray(groups, dtype=int) if labeled else None,
     )
+    return result
 
 
 def build_model() -> Pipeline:
@@ -194,7 +209,7 @@ def align_feature_columns(features: pd.DataFrame, feature_columns: list[str]) ->
 
 
 def evaluate_model(features: pd.DataFrame, labels: np.ndarray, path_groups: np.ndarray) -> None:
-    print("Evaluating watch-location model...")
+    log("Evaluating watch-location model...")
     model = build_model()
 
     train_scores: list[float] = []
@@ -223,17 +238,17 @@ def evaluate_model(features: pd.DataFrame, labels: np.ndarray, path_groups: np.n
     class_counts = pd.Series(labels).value_counts().sort_index().to_dict()
     per_class_recall = stratified_confusion.diagonal() / np.maximum(stratified_confusion.sum(axis=1), 1)
 
-    print("Watch-location summary")
-    print(f"  Training traces: {len(features)}")
-    print(f"  Feature columns: {features.shape[1]}")
-    print(f"  Class counts (0=wrist, 1=belt, 2=ankle): {class_counts}")
-    print(f"  Full-train accuracy: {full_train_score:.4f}")
-    print(f"  Mean fold training accuracy: {np.mean(train_scores):.4f} +/- {np.std(train_scores):.4f}")
-    print(f"  Mean 5-fold validation accuracy: {np.mean(stratified_scores):.4f} +/- {np.std(stratified_scores):.4f}")
-    print(f"  Mean 5-fold grouped-by-path validation accuracy: {np.mean(grouped_scores):.4f} +/- {np.std(grouped_scores):.4f}")
-    print("  Stratified CV confusion matrix (rows=true, cols=pred):")
-    print(stratified_confusion)
-    print(
+    log("Watch-location summary")
+    log(f"  Training traces: {len(features)}")
+    log(f"  Feature columns: {features.shape[1]}")
+    log(f"  Class counts (0=wrist, 1=belt, 2=ankle): {class_counts}")
+    log(f"  Full-train accuracy: {full_train_score:.4f}")
+    log(f"  Mean fold training accuracy: {np.mean(train_scores):.4f} +/- {np.std(train_scores):.4f}")
+    log(f"  Mean 5-fold validation accuracy: {np.mean(stratified_scores):.4f} +/- {np.std(stratified_scores):.4f}")
+    log(f"  Mean 5-fold grouped-by-path validation accuracy: {np.mean(grouped_scores):.4f} +/- {np.std(grouped_scores):.4f}")
+    log("  Stratified CV confusion matrix (rows=true, cols=pred):")
+    log(str(stratified_confusion))
+    log(
         "  Stratified CV per-class recall "
         f"(wrist, belt, ankle): {[round(float(x), 4) for x in per_class_recall]}"
     )
@@ -244,14 +259,14 @@ def train_watch_location_model(
     evaluate: bool = True,
     model_output: Path | None = None,
 ) -> dict[str, object]:
-    print(f"Loading training traces from {train_dir} ...")
+    log(f"Loading training traces from {train_dir} ...")
     train_x, _, train_y, train_groups = load_dataset(train_dir, labeled=True)
 
     if evaluate and train_y is not None and train_groups is not None:
         evaluate_model(train_x, train_y, train_groups)
 
     model = build_model()
-    print("Training final model on all training traces...")
+    log("Training final model on all training traces...")
     model.fit(train_x, train_y)
 
     artifact = {
@@ -264,7 +279,7 @@ def train_watch_location_model(
     if model_output is not None:
         model_output.parent.mkdir(parents=True, exist_ok=True)
         joblib.dump(artifact, model_output)
-        print(f"Saved watch-location model to {model_output}")
+        log(f"Saved watch-location model to {model_output}")
 
     return artifact
 
@@ -277,7 +292,7 @@ def load_watch_location_model(model_path: Path) -> dict[str, object]:
         raise ValueError(f"Saved model at {model_path} is missing keys: {sorted(missing_keys)}")
     if artifact["task"] != "watch_location":
         raise ValueError(f"Saved model at {model_path} is not a watch-location model")
-    print(f"Loaded watch-location model from {model_path}")
+    log(f"Loaded watch-location model from {model_path}")
     return artifact
 
 
@@ -286,12 +301,12 @@ def predict_watch_locations_from_artifact(
     test_dir: Path,
     output_csv: Path,
 ) -> pd.DataFrame:
-    print(f"Loading test traces from {test_dir} ...")
+    log(f"Loading test traces from {test_dir} ...")
     test_x, test_ids, _, _ = load_dataset(test_dir, labeled=False)
     feature_columns = artifact["feature_columns"]
     test_x = align_feature_columns(test_x, feature_columns)
 
-    print("Predicting watch locations for test traces...")
+    log("Predicting watch locations for test traces...")
     predicted_watch_locations = artifact["model"].predict(test_x).astype(int)
 
     predictions = pd.DataFrame(
@@ -303,7 +318,7 @@ def predict_watch_locations_from_artifact(
 
     output_csv.parent.mkdir(parents=True, exist_ok=True)
     predictions.to_csv(output_csv, index=False)
-    print(f"Saved watch-location predictions to {output_csv}")
+    log(f"Saved watch-location predictions to {output_csv}")
     return predictions
 
 
