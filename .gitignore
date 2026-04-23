@@ -4,6 +4,9 @@ __pycache__/
 *.py[codz]
 *$py.class
 
+# Nini's scripts for visualising etc
+visualise_scripts/
+
 # C extensions
 *.so
 
