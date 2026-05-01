@@ -10,7 +10,7 @@ from scipy.signal import welch
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.metrics import f1_score
 
-from .recording import Recording
+from mhealth_activity.recording import Recording
 
 
 ACTIVITY_ORDER = ("standing", "walking", "running", "cycling")
