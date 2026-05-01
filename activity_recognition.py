@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, Iterable, Mapping, Sequence
 
+import joblib
 import numpy as np
 import pandas as pd
 from scipy.signal import welch
@@ -23,6 +24,9 @@ WATCH_MOTION_GROUPS = {
 DEFAULT_WINDOW_S = 15.0
 DEFAULT_HOP_S = 5.0
 DEFAULT_MIN_ACTIVITY_S = 60.0
+DEFAULT_TRAIN_DIR = Path(r"c:\Users\giaco\Desktop\ETH\Mobile_Health\DATA\data\train")
+DEFAULT_TEST_DIR = Path(r"c:\Users\giaco\Desktop\ETH\Mobile_Health\DATA\data\test")
+DEFAULT_MODEL_PATH = Path("group10_activity_recognizer.joblib")
 
 
 def normalize_activities(raw_value) -> list[str]:
@@ -351,6 +355,30 @@ def build_activity_recognizer(
     )
 
 
+def save_activity_recognizer(
+    recognizer: ActivityRecognizer,
+    model_path: Path | str = DEFAULT_MODEL_PATH,
+) -> Path:
+    model_path = Path(model_path)
+    joblib.dump(recognizer, model_path)
+    return model_path
+
+
+def load_activity_recognizer(
+    model_path: Path | str = DEFAULT_MODEL_PATH,
+) -> ActivityRecognizer:
+    return joblib.load(model_path)
+
+
+def train_and_save_activity_recognizer(
+    train_dir: Path | str = DEFAULT_TRAIN_DIR,
+    model_path: Path | str = DEFAULT_MODEL_PATH,
+) -> ActivityRecognizer:
+    recognizer = build_activity_recognizer(train_dir)
+    save_activity_recognizer(recognizer, model_path)
+    return recognizer
+
+
 def evaluate_activity_recognizer(
     recognizer: ActivityRecognizer,
     data_dir: Path | str,
@@ -382,3 +410,59 @@ def activity_f1_summary(prediction_df: pd.DataFrame) -> pd.Series:
     }
     scores["macro"] = float(np.mean([scores[activity] for activity in ACTIVITY_ORDER]))
     return pd.Series(scores, dtype=float)
+
+
+def generate_activity_predictions(
+    recognizer: ActivityRecognizer,
+    test_dir: Path | str = DEFAULT_TEST_DIR,
+) -> pd.DataFrame:
+    test_dir = Path(test_dir)
+    rows = []
+
+    for path in sorted(test_dir.glob("*.pkl")):
+        recording = Recording(str(path))
+        predicted_activities = recognizer.predict_activities(recording)
+        rows.append(
+            {
+                "Id": _trace_id_from_path(path),
+                **{
+                    activity: bool(predicted_activities[activity])
+                    for activity in ACTIVITY_ORDER
+                },
+            }
+        )
+
+    return pd.DataFrame(rows).sort_values("Id").reset_index(drop=True)
+
+
+def run_activity_analysis(
+    train_dir: Path | str = DEFAULT_TRAIN_DIR,
+    test_dir: Path | str = DEFAULT_TEST_DIR,
+    model_path: Path | str = DEFAULT_MODEL_PATH,
+    evaluate_train: bool = False,
+    prediction_path: Path | str | None = None,
+) -> dict[str, object]:
+    recognizer = train_and_save_activity_recognizer(train_dir, model_path)
+    result: dict[str, object] = {
+        "recognizer": recognizer,
+        "model_path": Path(model_path).resolve(),
+    }
+
+    if evaluate_train:
+        evaluation_df = evaluate_activity_recognizer(recognizer, train_dir)
+        result["evaluation"] = evaluation_df
+        result["f1"] = activity_f1_summary(evaluation_df)
+
+    if prediction_path is not None:
+        prediction_df = generate_activity_predictions(recognizer, test_dir)
+        prediction_df.to_csv(prediction_path, index=False)
+        result["predictions"] = prediction_df
+        result["prediction_path"] = Path(prediction_path).resolve()
+
+    return result
+
+
+if __name__ == "__main__":
+    analysis_result = run_activity_analysis(evaluate_train=True)
+    print(f"Saved activity recognizer to {analysis_result['model_path']}")
+    print(analysis_result["f1"].rename("f1").to_frame())
